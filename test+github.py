@@ -1,29 +1,18 @@
-# Importă modulul pentru rularea funcțiilor asincrone.
+import argparse
 import asyncio
-# Importă clasa Path pentru lucrul cu căi de fișiere.
+import os
 from pathlib import Path
 
-# Importă biblioteca Edge TTS pentru generarea vocii neurale.
 import edge_tts
-# Importă traducătorul MyMemory pentru traducerea online din română în engleză.
 from deep_translator import MyMemoryTranslator
 
 
-# Obține folderul în care se află acest script.
-base_dir = Path(__file__).resolve().parent
-# Stabilește calea fișierului românesc care va fi citit.
-source_path = base_dir / "romana.txt"
-# Stabilește calea fișierului cu traducerea în engleză.
-translation_path = base_dir / "engleza.txt"
-# Stabilește calea fișierului MP3 care va fi generat.
-audio_path = base_dir / "engleza.mp3"
+BASE_DIR = Path(__file__).resolve().parent
+ROMANIAN_FILE = BASE_DIR / "romana.txt"
+ENGLISH_FILE = BASE_DIR / "engleza.txt"
+AUDIO_FILE = BASE_DIR / "romana.engleza.mp3"
 
-# Citește textul românesc folosind codarea UTF-8.
-source_text = source_path.read_text(encoding="utf-8")
-# Creează traducătorul pentru limba română către limba engleză.
-translator = MyMemoryTranslator(source="romanian", target="english")
-# Definește traduceri corecte pentru expresiile prezente în fișierul sursă.
-known_translations = {
+KNOWN_TRANSLATIONS = {
 	"bună dimineața.": "Good morning.",
 	"bună ziua.": "Good afternoon.",
 	"bună seara.": "Good evening.",
@@ -34,50 +23,107 @@ known_translations = {
 	"doamnă.": "Mrs.",
 	"domn.": "Mr.",
 }
-# Separă liniile pentru a păstra și poziția liniilor goale.
-source_lines = source_text.splitlines()
-# Selectează liniile necunoscute pentru traducerea online batch.
-unknown_lines = [line for line in source_lines if line.strip() and line.strip().casefold() not in known_translations]
-# Traduce liniile necunoscute într-o singură cerere către serviciul online.
-translated_unknown = translator.translate_batch(unknown_lines) if unknown_lines else []
-# Creează un iterator pentru rezultatele traducerilor necunoscute.
-unknown_iterator = iter(translated_unknown)
-# Reface textul, păstrând liniile goale și traducerile cunoscute.
-translated_lines = []
-# Parcurge liniile originale în aceeași ordine.
-for line in source_lines:
-	# Păstrează liniile goale fără traducere.
-	if not line.strip():
-		translated_lines.append("")
-	# Folosește traducerea verificată pentru expresiile cunoscute.
-	elif line.strip().casefold() in known_translations:
-		translated_lines.append(known_translations[line.strip().casefold()])
-	# Folosește rezultatul online pentru orice linie nouă.
+
+
+def create_english_translation(romanian_lines: list[str]) -> list[str]:
+	"""Traduce liniile românești și salvează rezultatul în engleza.txt."""
+	unknown_lines = [
+		line
+		for line in romanian_lines
+		if line.strip() and line.strip().casefold() not in KNOWN_TRANSLATIONS
+	]
+
+	if unknown_lines:
+		translator = MyMemoryTranslator(source="romanian", target="english")
+		unknown_translations = iter(translator.translate_batch(unknown_lines))
 	else:
-		translated_lines.append(next(unknown_iterator))
-# Unește liniile traduse într-un singur text.
-translated_text = "\n".join(translated_lines)
-# Păstrează linia finală dacă fișierul original o avea.
-if source_text.endswith("\n"):
-	translated_text += "\n"
-# Scrie traducerea în fișierul englezesc.
-translation_path.write_text(translated_text, encoding="utf-8")
+		unknown_translations = iter(())
 
-# Alege vocea neurală în limba engleză.
-voice = "en-US-AriaNeural"
+	english_lines = []
+	for line in romanian_lines:
+		normalized_line = line.strip().casefold()
+		if not normalized_line:
+			english_lines.append("")
+		elif normalized_line in KNOWN_TRANSLATIONS:
+			english_lines.append(KNOWN_TRANSLATIONS[normalized_line])
+		else:
+			english_lines.append(next(unknown_translations))
 
-
-# Definește o funcție asincronă pentru generarea fișierului audio.
-async def generate_audio() -> None:
-	# Creează obiectul care transformă textul tradus în voce.
-	communicator = edge_tts.Communicate(translated_text, voice)
-	# Salvează vocea generată în fișierul MP3.
-	await communicator.save(str(audio_path))
+	english_text = "\n".join(english_lines)
+	if ROMANIAN_FILE.read_text(encoding="utf-8").endswith("\n"):
+		english_text += "\n"
+	ENGLISH_FILE.write_text(english_text, encoding="utf-8")
+	return english_lines
 
 
-# Pornește și execută funcția asincronă.
-asyncio.run(generate_audio())
+async def create_bilingual_audio(
+	romanian_lines: list[str], english_lines: list[str]
+) -> None:
+	"""Creează un MP3 cu fiecare replică întâi în română, apoi în engleză."""
+	romanian_voice = "ro-RO-AlinaNeural"
+	english_voice = "en-US-AriaNeural"
+	audio_chunks = []
 
-# Afișează locațiile fișierelor create.
-print(f"Translation generated: {translation_path}")
-print(f"Audio generated: {audio_path}")
+	for romanian_line, english_line in zip(romanian_lines, english_lines):
+		for text, voice in (
+			(romanian_line.strip(), romanian_voice),
+			(english_line.strip(), english_voice),
+		):
+			if not text:
+				continue
+			communicator = edge_tts.Communicate(text, voice)
+			async for chunk in communicator.stream():
+				if chunk["type"] == "audio":
+					audio_chunks.append(chunk["data"])
+
+	AUDIO_FILE.write_bytes(b"".join(audio_chunks))
+
+
+def run_gemini_chat() -> None:
+	"""Pornește chatul Gemini, dacă utilizatorul cere explicit această opțiune."""
+	from google import genai
+
+	api_key = os.getenv("GEMINI_API_KEY")
+	if not api_key:
+		raise SystemExit("Setează variabila de mediu GEMINI_API_KEY pentru chatul Gemini.")
+
+	chat = genai.Client(api_key=api_key).chats.create(model="gemini-3.8-flash")
+	print("Chat Gemini pornit. Scrie 'iesire' pentru a opri.")
+	while True:
+		question = input("\nTu: ")
+		if question.strip().casefold() == "iesire":
+			print("La revedere!")
+			break
+		if not question.strip():
+			continue
+		try:
+			response = chat.send_message(question)
+			print(f"\nGemini: {response.text}")
+		except Exception as error:
+			print(f"Eroare la conectarea cu Gemini: {error}")
+
+
+def main() -> None:
+	parser = argparse.ArgumentParser(
+		description="Traduce romana.txt și generează un MP3 bilingv."
+	)
+	parser.add_argument(
+		"--chat",
+		action="store_true",
+		help="pornește chatul Gemini în loc să genereze fișierele audio",
+	)
+	args = parser.parse_args()
+
+	if args.chat:
+		run_gemini_chat()
+		return
+
+	romanian_lines = ROMANIAN_FILE.read_text(encoding="utf-8").splitlines()
+	english_lines = create_english_translation(romanian_lines)
+	asyncio.run(create_bilingual_audio(romanian_lines, english_lines))
+	print(f"Traducere creată: {ENGLISH_FILE}")
+	print(f"Audio creat: {AUDIO_FILE}")
+
+
+if __name__ == "__main__":
+	main()
