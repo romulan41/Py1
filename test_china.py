@@ -2,7 +2,7 @@ import os
 import requests
 
 # Cheia ta API oficială Z.AI
-API_KEY = "c6f6f81a98d94c89850ef8eb7152b1fc.yVnd9bODFJ9Zwq9w"
+API_KEY = "sssss"
 
 print("--- Mașina Timpului Z.AI (GLM-4-Flash) a pornit direct! ---")
 print("Scrie 'iesire' pentru a opri. Întreabă-mă orice despre epocile vechi!")
