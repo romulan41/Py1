@@ -2,7 +2,7 @@ import os
 from google import genai
 
 # Folosim cheia ta API validă
-client = genai.Client(api_key="AQ.Ab8RN6KKipAYR2UWmufIfjKDFZEQ_HMnnGUGJDofC5y5QunuXQ")
+client = genai.Client(api_key="AQ.dddd")
 
 # Am actualizat modelul la gemini-3.8-flash conform cerințelor Google
 chat = client.chats.create(model="gemini-3.8-flash")
