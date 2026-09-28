@@ -1,5 +1,5 @@
 import asyncio
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
 from threading import Event, Thread
 import tkinter as tk
@@ -125,16 +125,43 @@ class SursaVBCAble(sr.AudioSource):
 		self.stream = None
 
 
-def recunoaste_si_tradu(audio: sr.AudioData) -> tuple[str, str]:
+def recunoaste_si_tradu(
+	audio: sr.AudioData,
+	mesaje: Queue[tuple[str | None, str | None, str | None]],
+) -> tuple[str, str, str]:
 	"""Recunoaște japoneza, apoi returnează traducerile engleză și română."""
 	text_japoneza = sr.Recognizer().recognize_google(audio, language="ja-JP")
-	text_engleza = tradu_in_engleza(text_japoneza)
-	text_engleza = pastreaza_intrebarea(text_engleza, text_japoneza)
-	text_romana = tradu_in_romana(text_engleza)
-	text_romana = pastreaza_intrebarea(
-		text_romana, text_japoneza, text_engleza
-	)
-	return text_engleza, text_romana
+	with ThreadPoolExecutor(max_workers=2) as executor_traduceri:
+		viitor_engleza = executor_traduceri.submit(
+			tradu_in_engleza, text_japoneza
+		)
+		viitor_romana_directa = executor_traduceri.submit(
+			tradu_in_romana_din_japoneza, text_japoneza
+		)
+		text_engleza = viitor_engleza.result()
+		text_engleza = pastreaza_intrebarea(text_engleza, text_japoneza)
+		mesaje.put((text_engleza, "Se traduce...", "Se traduce..."))
+		viitor_romana_din_engleza = executor_traduceri.submit(
+			tradu_in_romana, text_engleza
+		)
+		text_romana = "Traducere indisponibilă"
+		text_romana_directa = "Traducere indisponibilă"
+		for viitor in as_completed(
+			(viitor_romana_din_engleza, viitor_romana_directa)
+		):
+			try:
+				traducere = pastreaza_intrebarea(
+					viitor.result(), text_japoneza, text_engleza
+				)
+			except Exception:
+				traducere = "Traducere indisponibilă"
+			if viitor is viitor_romana_din_engleza:
+				text_romana = traducere
+				mesaje.put((None, text_romana, None))
+			else:
+				text_romana_directa = traducere
+				mesaje.put((None, None, text_romana_directa))
+	return text_engleza, text_romana, text_romana_directa
 
 
 def pastreaza_intrebarea(text: str, *surse: str) -> str:
@@ -191,6 +218,18 @@ def tradu_in_romana(text_engleza: str) -> str:
 		)
 
 
+def tradu_in_romana_din_japoneza(text_japoneza: str) -> str:
+	"""Traduce direct în română, cu Google ca rezervă pentru MyMemory."""
+	try:
+		return MyMemoryTranslator(source="japanese", target="romanian").translate(
+			text_japoneza
+		)
+	except Exception:
+		return GoogleTranslator(source="japanese", target="romanian").translate(
+			text_japoneza
+		)
+
+
 async def genereaza_voce(text: str) -> bytes:
 	"""Generează voce românească în memorie, fără fișier audio temporar."""
 	fragmente = []
@@ -240,7 +279,9 @@ class FereastraSubtitrari:
 	CULOARE_TRANSPARENTA = "#010203"
 
 	def __init__(
-		self, mesaje: Queue[tuple[str, str]], oprire: Event
+		self,
+		mesaje: Queue[tuple[str | None, str | None, str | None]],
+		oprire: Event,
 	) -> None:
 		self._mesaje = mesaje
 		self._oprire = oprire
@@ -251,13 +292,13 @@ class FereastraSubtitrari:
 		self.root.overrideredirect(True)
 		self.root.configure(bg=self.CULOARE_TRANSPARENTA)
 		self.root.wm_attributes("-transparentcolor", self.CULOARE_TRANSPARENTA)
-		self.root.wm_attributes("-alpha", 0.94)
+		self.root.wm_attributes("-alpha", 1.0)
 		self.root.wm_attributes("-topmost", True)
 
 		latime_ecran = self.root.winfo_screenwidth()
 		inaltime_ecran = self.root.winfo_screenheight()
 		latime = int(latime_ecran * 0.92)
-		inaltime = 170
+		inaltime = 420
 		x = (latime_ecran - latime) // 2
 		y = max(0, inaltime_ecran - inaltime - 100)
 		self.root.geometry(f"{latime}x{inaltime}+{x}+{y}")
@@ -268,13 +309,23 @@ class FereastraSubtitrari:
 		self._romana = tk.StringVar(
 			master=self.root, value="RO: Se așteaptă sunetul japonez..."
 		)
-		self._creeaza_rand(self._engleza, latime - 60, 48)
-		self._creeaza_rand(self._romana, latime - 60, 112)
+		self._romana_directa = tk.StringVar(
+			master=self.root, value="RO direct: Se așteaptă sunetul japonez..."
+		)
+		self._creeaza_rand(self._engleza, latime - 60, 70)
+		self._creeaza_rand(self._romana, latime - 60, 210)
+		self._creeaza_rand(
+			self._romana_directa, latime - 60, 350, culoare_text="#FF4040"
+		)
 		self.root.bind_all("<Escape>", self._inchide)
 		self.root.after(100, self._actualizeaza)
 
 	def _creeaza_rand(
-		self, text: tk.StringVar, latime_maxima: int, pozitie_y: int
+		self,
+		text: tk.StringVar,
+		latime_maxima: int,
+		pozitie_y: int,
+		culoare_text: str = "#FFFF00",
 	) -> None:
 		font = ("Segoe UI", 32, "bold")
 		for deplasare_x, deplasare_y in (
@@ -282,12 +333,16 @@ class FereastraSubtitrari:
 			(1, 0),
 			(0, -1),
 			(0, 1),
+			(-1, -1),
+			(-1, 1),
+			(1, -1),
+			(1, 1),
 		):
 			umbra = tk.Label(
 				self.root,
 				textvariable=text,
 				font=font,
-				fg="#111111",
+				fg="#000000",
 				bg=self.CULOARE_TRANSPARENTA,
 				wraplength=latime_maxima,
 				justify="center",
@@ -305,7 +360,7 @@ class FereastraSubtitrari:
 			self.root,
 			textvariable=text,
 			font=font,
-			fg="#FFFF00",
+			fg=culoare_text,
 			bg=self.CULOARE_TRANSPARENTA,
 			wraplength=latime_maxima,
 			justify="center",
@@ -328,16 +383,19 @@ class FereastraSubtitrari:
 		self.root.geometry(f"+{x}+{y}")
 
 	def _actualizeaza(self) -> None:
-		ultimul_mesaj = None
 		while True:
 			try:
-				ultimul_mesaj = self._mesaje.get_nowait()
+				text_engleza, text_romana, text_romana_directa = (
+					self._mesaje.get_nowait()
+				)
 			except Empty:
 				break
-		if ultimul_mesaj is not None:
-			text_engleza, text_romana = ultimul_mesaj
-			self._engleza.set(f"EN: {text_engleza}")
-			self._romana.set(f"RO: {text_romana}")
+			if text_engleza is not None:
+				self._engleza.set(f"EN: {text_engleza}")
+			if text_romana is not None:
+				self._romana.set(f"RO: {text_romana}")
+			if text_romana_directa is not None:
+				self._romana_directa.set(f"RO direct: {text_romana_directa}")
 		self.root.after(100, self._actualizeaza)
 
 	def _inchide(self, _eveniment: tk.Event | None = None) -> None:
@@ -349,17 +407,17 @@ class FereastraSubtitrari:
 
 
 def asculta_si_tradu(
-	mesaje: Queue[tuple[str, str]], oprire: Event
+	mesaje: Queue[tuple[str | None, str | None, str | None]], oprire: Event
 ) -> None:
 	"""Ascultă VB-CABLE, afișează engleza și redă traducerea românească."""
 	dispozitiv_index, dispozitiv = gaseste_intrarea_vbcable()
 	if REDA_VOCEA_ROMANA:
 		iesire_index, iesire = gaseste_iesirea_vocala()
 	frecventa = int(dispozitiv["default_samplerate"])
-	fragmente_in_curs: list[Future[tuple[str, str]]] = []
+	fragmente_in_curs: list[Future[tuple[str, str, str]]] = []
 	audio_in_asteptare: list[sr.AudioData] = []
 	recunoastere = sr.Recognizer()
-	recunoastere.pause_threshold = 2.0
+	recunoastere.pause_threshold = 1.0
 	recunoastere.non_speaking_duration = 0.5
 	recunoastere.phrase_threshold = 0.25
 
@@ -393,15 +451,17 @@ def asculta_si_tradu(
 								executor.submit(
 									recunoaste_si_tradu,
 									audio_in_asteptare.pop(0),
+									mesaje,
 								)
 							)
 
 						while fragmente_in_curs and fragmente_in_curs[0].done():
 							fragment_incheiat = fragmente_in_curs.pop(0)
 							try:
-								text_engleza, text_romana = fragment_incheiat.result()
+								text_engleza, text_romana, _text_romana_directa = (
+									fragment_incheiat.result()
+								)
 								print(f"\nEN: {text_engleza}\n", flush=True)
-								mesaje.put((text_engleza, text_romana))
 								if REDA_VOCEA_ROMANA:
 									executor_voce.submit(
 										reda_subtitrarea, text_romana, iesire_index
@@ -418,7 +478,7 @@ def asculta_si_tradu(
 
 
 def main() -> None:
-	mesaje: Queue[tuple[str, str]] = Queue()
+	mesaje: Queue[tuple[str | None, str | None, str | None]] = Queue()
 	oprire = Event()
 	fereastra = FereastraSubtitrari(mesaje, oprire)
 	thread_audio = Thread(
