@@ -2,7 +2,6 @@ import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
 from threading import Event, Thread
-from typing import Callable
 import tkinter as tk
 import time
 
@@ -14,16 +13,7 @@ import speech_recognition as sr
 from deep_translator import GoogleTranslator, MyMemoryTranslator
 
 REDA_VOCEA_ROMANA = False
-TipMesaj = tuple[
-	str | None,
-	str | None,
-	str | None,
-	tuple[str, str] | None,
-]
-
-
-def raporteaza_stare(mesaje: Queue[TipMesaj], etapa: str, stare: str) -> None:
-	mesaje.put((None, None, None, (etapa, stare)))
+TipMesaj = tuple[str | None, str | None, str | None]
 
 
 def gaseste_intrarea_vbcable() -> tuple[int, dict]:
@@ -141,36 +131,19 @@ def recunoaste_si_tradu(
 	mesaje: Queue[TipMesaj],
 ) -> tuple[str, str, str]:
 	"""Recunoaște japoneza, apoi returnează traducerile engleză și română."""
-	raporteaza_stare(mesaje, "ASR", "Google: cerere în curs")
-	try:
-		text_japoneza = sr.Recognizer().recognize_google(audio, language="ja-JP")
-	except Exception as eroare:
-		raporteaza_stare(mesaje, "ASR", f"Eroare: {str(eroare)[:70]}")
-		raise
-	raporteaza_stare(mesaje, "ASR", "Finalizat")
+	text_japoneza = sr.Recognizer().recognize_google(audio, language="ja-JP")
 	with ThreadPoolExecutor(max_workers=2) as executor_traduceri:
 		viitor_engleza = executor_traduceri.submit(
-			tradu_in_engleza,
-			text_japoneza,
-			lambda stare: raporteaza_stare(mesaje, "JP→EN", stare),
+			tradu_in_engleza, text_japoneza
 		)
 		viitor_romana_directa = executor_traduceri.submit(
-			tradu_in_romana_din_japoneza,
-			text_japoneza,
-			lambda stare: raporteaza_stare(mesaje, "JP→RO", stare),
+			tradu_in_romana_din_japoneza, text_japoneza
 		)
-		try:
-			text_engleza = viitor_engleza.result()
-		except Exception as eroare:
-			raporteaza_stare(mesaje, "JP→EN", f"Eroare: {str(eroare)[:70]}")
-			raise
-		raporteaza_stare(mesaje, "JP→EN", "Finalizat")
+		text_engleza = viitor_engleza.result()
 		text_engleza = pastreaza_intrebarea(text_engleza, text_japoneza)
-		mesaje.put((text_engleza, "Se traduce...", "Se traduce...", None))
+		mesaje.put((text_engleza, "Se traduce...", "Se traduce..."))
 		viitor_romana_din_engleza = executor_traduceri.submit(
-			tradu_in_romana,
-			text_engleza,
-			lambda stare: raporteaza_stare(mesaje, "EN→RO", stare),
+			tradu_in_romana, text_engleza
 		)
 		text_romana = "Traducere indisponibilă"
 		text_romana_directa = "Traducere indisponibilă"
@@ -181,20 +154,14 @@ def recunoaste_si_tradu(
 				traducere = pastreaza_intrebarea(
 					viitor.result(), text_japoneza, text_engleza
 				)
-			except Exception as eroare:
+			except Exception:
 				traducere = "Traducere indisponibilă"
-				etapa = "EN→RO" if viitor is viitor_romana_din_engleza else "JP→RO"
-				raporteaza_stare(mesaje, etapa, f"Eroare: {str(eroare)[:70]}")
 			if viitor is viitor_romana_din_engleza:
 				text_romana = traducere
-				if traducere != "Traducere indisponibilă":
-					raporteaza_stare(mesaje, "EN→RO", "Finalizat")
-				mesaje.put((None, text_romana, None, None))
+				mesaje.put((None, text_romana, None))
 			else:
 				text_romana_directa = traducere
-				if traducere != "Traducere indisponibilă":
-					raporteaza_stare(mesaje, "JP→RO", "Finalizat")
-				mesaje.put((None, None, text_romana_directa, None))
+				mesaje.put((None, None, text_romana_directa))
 	return text_engleza, text_romana, text_romana_directa
 
 
@@ -217,29 +184,19 @@ def este_intrebare(text: str) -> bool:
 	return terminare.endswith(("か", "かな", "かなあ", "の"))
 
 
-def tradu_in_engleza(
-	text_japoneza: str, raporteaza: Callable[[str], None] | None = None
-) -> str:
+def tradu_in_engleza(text_japoneza: str) -> str:
 	"""Traduce japoneza în engleză cu MyMemory ca rezervă."""
 	try:
-		if raporteaza:
-			raporteaza("Google: cerere în curs")
 		return GoogleTranslator(source="japanese", target="english").translate(
 			text_japoneza
 		)
 	except Exception as eroare_google:
-		if raporteaza:
-			raporteaza(
-				f"MyMemory: cerere în curs (fallback; Google: {str(eroare_google)[:30]})"
-			)
 		return MyMemoryTranslator(source="japanese", target="english").translate(
 			text_japoneza
 		)
 
 
-def tradu_in_romana(
-	text_engleza: str, raporteaza: Callable[[str], None] | None = None
-) -> str:
+def tradu_in_romana(text_engleza: str) -> str:
 	"""Traduce textul cu Google și folosește MyMemory doar ca rezervă."""
 	text_curat = text_engleza.strip()
 	text_normalizat = " ".join(
@@ -253,36 +210,22 @@ def tradu_in_romana(
 		)
 		return f"Îl iau{semn_punctuatie}"
 	try:
-		if raporteaza:
-			raporteaza("Google: cerere în curs")
 		return GoogleTranslator(source="english", target="romanian").translate(
 			text_engleza
 		)
 	except Exception as eroare_google:
-		if raporteaza:
-			raporteaza(
-				f"MyMemory: cerere în curs (fallback; Google: {str(eroare_google)[:30]})"
-			)
 		return MyMemoryTranslator(source="english", target="romanian").translate(
 			text_engleza
 		)
 
 
-def tradu_in_romana_din_japoneza(
-	text_japoneza: str, raporteaza: Callable[[str], None] | None = None
-) -> str:
+def tradu_in_romana_din_japoneza(text_japoneza: str) -> str:
 	"""Traduce direct în română, cu Google ca rezervă pentru MyMemory."""
 	try:
-		if raporteaza:
-			raporteaza("MyMemory: cerere în curs")
 		return MyMemoryTranslator(source="japanese", target="romanian").translate(
 			text_japoneza
 		)
 	except Exception as eroare_mymemory:
-		if raporteaza:
-			raporteaza(
-				f"Google: cerere în curs (fallback; MyMemory: {str(eroare_mymemory)[:30]})"
-			)
 		return GoogleTranslator(source="japanese", target="romanian").translate(
 			text_japoneza
 		)
@@ -298,14 +241,10 @@ async def genereaza_voce(text: str) -> bytes:
 	return b"".join(fragmente)
 
 
-def reda_subtitrarea(
-	text: str, dispozitiv_index: int, mesaje: Queue[TipMesaj]
-) -> None:
+def reda_subtitrarea(text: str, dispozitiv_index: int) -> None:
 	"""Redă vocea și încearcă alt driver dacă ieșirea principală eșuează."""
 	try:
-		raporteaza_stare(mesaje, "Voce", "Edge TTS: generare în curs")
 		date_audio = asyncio.run(genereaza_voce(text))
-		raporteaza_stare(mesaje, "Voce", "Redare audio în curs")
 		iesiri = gaseste_iesiri_vocale()
 		iesiri.sort(key=lambda item: item[0] != dispozitiv_index)
 		erori = []
@@ -320,7 +259,6 @@ def reda_subtitrarea(
 				)
 				semnal = np.frombuffer(pcm.samples, dtype=np.int16)
 				sd.play(semnal, samplerate=frecventa, device=index, blocking=True)
-				raporteaza_stare(mesaje, "Voce", "Finalizat")
 				if index != dispozitiv_index:
 					api = sd.query_hostapis(dispozitiv["hostapi"])["name"]
 					print(f"Vocea română redată prin alternativa {api}.", flush=True)
@@ -331,10 +269,8 @@ def reda_subtitrarea(
 					sd.stop()
 				except Exception:
 					pass
-		raporteaza_stare(mesaje, "Voce", f"Eroare ieșire audio: {erori[0][:60]}")
 		print("Eroare la toate ieșirile audio: " + " | ".join(erori), flush=True)
 	except Exception as eroare:
-		raporteaza_stare(mesaje, "Voce", f"Eroare: {str(eroare)[:70]}")
 		print(f"Eroare la redarea vocii românești: {eroare}", flush=True)
 
 
@@ -363,7 +299,7 @@ class FereastraSubtitrari:
 		latime_ecran = self.root.winfo_screenwidth()
 		inaltime_ecran = self.root.winfo_screenheight()
 		latime = int(latime_ecran * 0.92)
-		inaltime = 500
+		inaltime = 420
 		x = (latime_ecran - latime) // 2
 		y = max(0, inaltime_ecran - inaltime - 100)
 		self.root.geometry(f"{latime}x{inaltime}+{x}+{y}")
@@ -377,31 +313,11 @@ class FereastraSubtitrari:
 		self._romana_directa = tk.StringVar(
 			master=self.root, value="RO direct: Se așteaptă sunetul japonez..."
 		)
-		self._stari = {
-			"Audio": "Pornire",
-			"ASR": "Așteaptă audio",
-			"JP→EN": "În așteptare",
-			"JP→RO": "În așteptare",
-			"EN→RO": "În așteptare",
-			"Voce": "Dezactivată" if not REDA_VOCEA_ROMANA else "În așteptare",
-		}
-		self._status = tk.StringVar(master=self.root)
-		self._inceput_stari: dict[str, float] = {}
 		self._creeaza_rand(self._engleza, latime - 60, 70)
 		self._creeaza_rand(self._romana, latime - 60, 210)
 		self._creeaza_rand(
 			self._romana_directa, latime - 60, 350, culoare_text="#FF4040"
 		)
-		tk.Label(
-			self.root,
-			textvariable=self._status,
-			font=("Segoe UI", 14, "bold"),
-			fg="#FFFFFF",
-			bg=self.CULOARE_TRANSPARENTA,
-			wraplength=latime - 40,
-			justify="left",
-		).place(x=20, y=395, anchor="nw")
-		self._actualizeaza_status()
 		self.root.bind_all("<Escape>", self._inchide)
 		self.root.after(100, self._actualizeaza)
 
@@ -470,7 +386,7 @@ class FereastraSubtitrari:
 	def _actualizeaza(self) -> None:
 		while True:
 			try:
-				text_engleza, text_romana, text_romana_directa, stare = (
+				text_engleza, text_romana, text_romana_directa = (
 					self._mesaje.get_nowait()
 				)
 			except Empty:
@@ -481,26 +397,7 @@ class FereastraSubtitrari:
 				self._romana.set(f"RO: {text_romana}")
 			if text_romana_directa is not None:
 				self._romana_directa.set(f"RO direct: {text_romana_directa}")
-			if stare is not None:
-				etapa, valoare = stare
-				self._stari[etapa] = valoare
-				if "cerere în curs" in valoare or "generare în curs" in valoare or "redare audio în curs" in valoare:
-					self._inceput_stari[etapa] = time.monotonic()
-				else:
-					self._inceput_stari.pop(etapa, None)
-				self._actualizeaza_status()
-		self._actualizeaza_status()
 		self.root.after(100, self._actualizeaza)
-
-	def _actualizeaza_status(self) -> None:
-		stari_afisate = []
-		for etapa, stare in self._stari.items():
-			inceput = self._inceput_stari.get(etapa)
-			if inceput is not None and time.monotonic() - inceput >= 20:
-				secunde = int(time.monotonic() - inceput)
-				stare = f"{stare} (POSIBIL BLOCAT: {secunde}s)"
-			stari_afisate.append(f"{etapa}: {stare}")
-		self._status.set("   |   ".join(stari_afisate))
 
 	def _inchide(self, _eveniment: tk.Event | None = None) -> None:
 		self._oprire.set()
@@ -536,7 +433,6 @@ def asculta_si_tradu(
 		with ThreadPoolExecutor(max_workers=2) as executor:
 			with ThreadPoolExecutor(max_workers=1) as executor_voce:
 				with SursaVBCAble(dispozitiv_index, frecventa) as sursa_audio:
-					raporteaza_stare(mesaje, "Audio", "Ascultare VB-CABLE")
 					ascultare = executor.submit(
 						recunoastere.listen, sursa_audio, 1.0, 30.0
 					)
@@ -545,13 +441,11 @@ def asculta_si_tradu(
 							try:
 								audio = ascultare.result()
 								audio_in_asteptare.append(audio)
-								raporteaza_stare(mesaje, "Audio", "Fragment capturat")
 							except sr.WaitTimeoutError:
 								pass
 							ascultare = executor.submit(
 								recunoastere.listen, sursa_audio, 1.0, 30.0
 							)
-							raporteaza_stare(mesaje, "Audio", "Ascultare VB-CABLE")
 
 						while audio_in_asteptare and len(fragmente_in_curs) < 1:
 							fragmente_in_curs.append(
@@ -574,7 +468,6 @@ def asculta_si_tradu(
 										reda_subtitrarea,
 										text_romana,
 										iesire_index,
-										mesaje,
 									)
 							except sr.UnknownValueError:
 								pass
