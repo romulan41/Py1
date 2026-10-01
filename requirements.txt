@@ -1,0 +1,7 @@
+argostranslate
+edge-tts
+faster-whisper
+miniaudio
+numpy
+sounddevice
+SpeechRecognition

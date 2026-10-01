@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+env/
+
+*.mp3
+*.wav
+*.ogg
+
+# Local model/cache files
+.cache/
+models/
+
+# Local editor and OS files
+.vscode/
+.idea/
+*.user
+Thumbs.db
+Desktop.ini
