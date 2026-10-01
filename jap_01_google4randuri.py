@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
 from threading import Event, Thread
