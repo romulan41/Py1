@@ -15,7 +15,8 @@ env/
 models/
 
 # Local editor and OS files
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .idea/
 *.user
 Thumbs.db

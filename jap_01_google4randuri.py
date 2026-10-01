@@ -1,8 +1,9 @@
 import asyncio
+import msvcrt
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 import tkinter as tk
 import time
 
@@ -11,10 +12,13 @@ import miniaudio
 import numpy as np
 import sounddevice as sd
 import speech_recognition as sr
-from deep_translator import GoogleTranslator, MyMemoryTranslator
+from deep_translator import GoogleTranslator
 
 REDA_VOCEA_ROMANA = False
 TipMesaj = tuple[str | None, str | None, str | None]
+INTERVAL_CERERI_GOOGLE = 5.0
+_blocare_google = Lock()
+_ultima_cerere_google = 0.0
 
 
 def gaseste_intrarea_vbcable() -> tuple[int, dict]:
@@ -185,51 +189,33 @@ def este_intrebare(text: str) -> bool:
 	return terminare.endswith(("か", "かな", "かなあ", "の"))
 
 
+def traduce_cu_google(text: str, sursa: str, destinatie: str) -> str:
+	"""Trimite cererile Google pe rând, cu o pauză între ele."""
+	global _ultima_cerere_google
+	with _blocare_google:
+		acum = time.monotonic()
+		asteptare = INTERVAL_CERERI_GOOGLE - (
+			acum - _ultima_cerere_google
+		)
+		if asteptare > 0:
+			time.sleep(asteptare)
+		_ultima_cerere_google = time.monotonic()
+		return GoogleTranslator(source=sursa, target=destinatie).translate(text)
+
+
 def tradu_in_engleza(text_japoneza: str) -> str:
-	"""Traduce japoneza în engleză cu MyMemory ca rezervă."""
-	try:
-		return GoogleTranslator(source="japanese", target="english").translate(
-			text_japoneza
-		)
-	except Exception as eroare_google:
-		return MyMemoryTranslator(source="japanese", target="english").translate(
-			text_japoneza
-		)
+	"""Traduce japoneza în engleză cu Google Translate online."""
+	return traduce_cu_google(text_japoneza, "japanese", "english")
 
 
 def tradu_in_romana(text_engleza: str) -> str:
-	"""Traduce textul cu Google și folosește MyMemory doar ca rezervă."""
-	text_curat = text_engleza.strip()
-	text_normalizat = " ".join(
-		text_curat.casefold().replace("’", "'").split()
-	).rstrip(".,!?;:")
-	if text_normalizat in ("i'll take it", "i will take it"):
-		semn_punctuatie = (
-			text_curat[-1]
-			if text_curat.endswith((".", ",", "!", "?", ";", ":"))
-			else ""
-		)
-		return f"Îl iau{semn_punctuatie}"
-	try:
-		return GoogleTranslator(source="english", target="romanian").translate(
-			text_engleza
-		)
-	except Exception as eroare_google:
-		return MyMemoryTranslator(source="english", target="romanian").translate(
-			text_engleza
-		)
+	"""Traduce engleza în română cu Google Translate online."""
+	return traduce_cu_google(text_engleza, "english", "romanian")
 
 
 def tradu_in_romana_din_japoneza(text_japoneza: str) -> str:
-	"""Traduce direct în română, cu Google ca rezervă pentru MyMemory."""
-	try:
-		return MyMemoryTranslator(source="japanese", target="romanian").translate(
-			text_japoneza
-		)
-	except Exception as eroare_mymemory:
-		return GoogleTranslator(source="japanese", target="romanian").translate(
-			text_japoneza
-		)
+	"""Traduce japoneza direct în română cu Google Translate online."""
+	return traduce_cu_google(text_japoneza, "japanese", "romanian")
 
 
 async def genereaza_voce(text: str) -> bytes:
@@ -276,7 +262,7 @@ def reda_subtitrarea(text: str, dispozitiv_index: int) -> None:
 
 
 class FereastraSubtitrari:
-	"""Overlay transparent, mereu deasupra, pentru traducerile EN și RO."""
+	"""Overlay transparent, mereu deasupra, pentru traducerea românească."""
 
 	CULOARE_TRANSPARENTA = "#010203"
 
@@ -290,7 +276,7 @@ class FereastraSubtitrari:
 		self._x_apasare = 0
 		self._y_apasare = 0
 		self.root = tk.Tk()
-		self.root.title("Subtitrări EN / RO")
+		self.root.title("Subtitrare în română")
 		self.root.overrideredirect(True)
 		self.root.configure(bg=self.CULOARE_TRANSPARENTA)
 		self.root.wm_attributes("-transparentcolor", self.CULOARE_TRANSPARENTA)
@@ -323,6 +309,8 @@ class FereastraSubtitrari:
 			self._leaga_mutarea(eticheta)
 			self._etichete_istoric.append(eticheta)
 		self.root.bind_all("<Escape>", self._inchide)
+		self.root.bind_all("<KeyPress-q>", self._inchide)
+		self.root.bind_all("<KeyPress-Q>", self._inchide)
 		self.root.after(100, self._actualizeaza)
 
 
@@ -341,6 +329,9 @@ class FereastraSubtitrari:
 		self.root.geometry(f"+{x}+{y}")
 
 	def _actualizeaza(self) -> None:
+		if self._oprire.is_set():
+			self.root.destroy()
+			return
 		while True:
 			try:
 				_text_engleza, text_romana, _text_romana_directa = (
@@ -388,7 +379,7 @@ def asculta_si_tradu(
 		print(f"Vocea română se redă prin: {iesire['name']} ({api_iesire})")
 	else:
 		print("Redarea vocii românești este dezactivată.")
-	print("Subtitrările apar aici. Oprește ascultarea cu Ctrl+C.")
+	print("Subtitrările apar aici. Apasă q în această fereastră pentru a închide.")
 	try:
 		with ThreadPoolExecutor(max_workers=2) as executor:
 			with ThreadPoolExecutor(max_workers=1) as executor_voce:
@@ -440,7 +431,17 @@ def asculta_si_tradu(
 		print("\nAscultarea a fost oprită.")
 
 
+def asteapta_tasta_q(oprire: Event) -> None:
+	while not oprire.is_set():
+		if msvcrt.kbhit() and msvcrt.getwch().casefold() == "q":
+			oprire.set()
+			print("\nSe închide aplicația de subtitrare.", flush=True)
+			return
+		time.sleep(0.05)
+
+
 def main() -> None:
+	print("Subtitrare japoneză pornită. Se inițializează ascultarea...", flush=True)
 	mesaje: Queue[TipMesaj] = Queue()
 	oprire = Event()
 	fereastra = FereastraSubtitrari(mesaje, oprire)
@@ -448,6 +449,7 @@ def main() -> None:
 		target=asculta_si_tradu, args=(mesaje, oprire), daemon=True
 	)
 	thread_audio.start()
+	Thread(target=asteapta_tasta_q, args=(oprire,), daemon=True).start()
 	fereastra.ruleaza()
 
 

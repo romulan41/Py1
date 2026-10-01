@@ -1,0 +1,19 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Japanese subtitle translator",
+			"type": "process",
+			"command": "C:\\Windows\\py.exe",
+			"args": [
+				"-3.12",
+				"${workspaceFolder}\\jap_01_wisper_4randuri.py"
+			],
+			"problemMatcher": [],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		}
+	]
+}
